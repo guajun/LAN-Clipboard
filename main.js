@@ -17,44 +17,42 @@ const child_process = require('child_process');
 const { v4: uuidv4 } = require('uuid');
 
 // Helper to run wl-copy asynchronously with a timeout to avoid blocking the main thread
-function runWlCopy(gnomePayload, timeoutMs = 2000) {
+function runWlCopy(gnomePayload, timeoutMs = 8000) {
   return new Promise((resolve) => {
+    // Write payload to a temp file
+    const tmpName = `lan-clipboard-wlcopy-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+    const tmpPath = path.join(os.tmpdir(), tmpName);
     try {
-      // spawn and capture stdout/stderr for diagnostics
-      const cp = child_process.spawn('wl-copy', ['--type', 'x-special/gnome-copied-files'], { env: process.env });
-      let finished = false;
-      let stdout = '';
-      let stderr = '';
-      if (cp.stdout) cp.stdout.on('data', (c) => { try { stdout += c.toString(); } catch (e) {} });
-      if (cp.stderr) cp.stderr.on('data', (c) => { try { stderr += c.toString(); } catch (e) {} });
-      const to = setTimeout(() => {
-        if (finished) return;
-        finished = true;
-        try { cp.kill(); } catch (e) {}
-        resolve({ status: null, timedOut: true, stdout, stderr });
-      }, timeoutMs);
-      cp.on('error', (err) => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(to);
-        resolve({ status: null, error: err, stdout, stderr });
-      });
-      cp.on('close', (code) => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(to);
-        resolve({ status: code, stdout, stderr });
-      });
-      if (cp.stdin && !cp.stdin.destroyed) {
-        try {
-          cp.stdin.write(gnomePayload);
-          cp.stdin.end();
-        } catch (e) {
-          // ignore write errors; child may exit
-        }
-      }
+      fs.writeFileSync(tmpPath, gnomePayload, 'utf8');
     } catch (e) {
-      resolve({ status: null, error: e, stdout: '', stderr: (e && e.message) || '' });
+      return resolve({ status: null, error: e, stdout: '', stderr: (e && e.message) || '' });
+    }
+
+    // Use shell pipeline and background (&) so the child may stay alive without blocking us.
+    // We will not wait for the wl-copy process to exit; instead we immediately probe wl-paste.
+    // This mimics the user's `printf 'copy\nfile://...' | wl-copy --type x-special/gnome-copied-files` behavior.
+    const safeTmp = tmpPath.replace(/'/g, "'\\''");
+    const cmd = `sh -c "wl-copy --type x-special/gnome-copied-files < '${safeTmp}' >/dev/null 2>&1 &"`;
+    try {
+      // spawn the backgrounded shell command; child exit indicates shell started the background job
+      const cp = child_process.spawn('sh', ['-c', `wl-copy --type x-special/gnome-copied-files < '${safeTmp}' >/dev/null 2>&1 &`], { env: process.env });
+      // give the system a short moment, then probe wk-paste for the type
+      setTimeout(() => {
+        try {
+          const check = child_process.spawnSync('wl-paste', ['--list-types'], { encoding: 'utf8', timeout: 2000, env: process.env });
+          try { fs.unlinkSync(tmpPath); } catch (e) {}
+          if (check && check.status === 0 && check.stdout && check.stdout.includes('x-special/gnome-copied-files')) {
+            return resolve({ status: 0, stdout: check.stdout, stderr: check.stderr || '' });
+          }
+          return resolve({ status: null, timedOut: true, stdout: check && check.stdout || '', stderr: check && check.stderr || '' });
+        } catch (e) {
+          try { fs.unlinkSync(tmpPath); } catch (e2) {}
+          return resolve({ status: null, error: e, stdout: '', stderr: (e && e.message) || '' });
+        }
+      }, 150);
+    } catch (e) {
+      try { fs.unlinkSync(tmpPath); } catch (e2) {}
+      return resolve({ status: null, error: e, stdout: '', stderr: (e && e.message) || '' });
     }
   });
 }
@@ -175,7 +173,7 @@ ipcMain.handle('copy-item', async (event, ids) => {
             try {
               const check = child_process.spawnSync('wl-paste', ['--list-types'], { encoding: 'utf8', timeout: 2000, env: process.env });
               if (check && check.status === 0 && check.stdout && check.stdout.includes('x-special/gnome-copied-files')) {
-                console.log('wl-paste reports x-special/gnome-copied-files present after wl-copy timeout; treating as success');
+                // wl-paste shows the GNOME clipboard type — treat as success silently
                 return { ok: true };
               } else {
                 console.warn('wl-copy timed out and wl-paste did not report x-special/gnome-copied-files; falling back to clipboard.writeBuffer', wlRes.stdout || '', wlRes.stderr || '');
