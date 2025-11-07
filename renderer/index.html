@@ -1,0 +1,218 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>LAN Clipboard — Desktop</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; padding: 12px; }
+      header { display:flex; align-items:center; justify-content:space-between }
+      #list { margin-top: 12px; }
+      .item { border-bottom: 1px solid #eee; padding: 8px 0; display:flex; justify-content:space-between }
+      .meta { flex:1 }
+  .item.cut { background: #fff7e6; border-left: 4px solid #f5a623; }
+  .item img { border-radius:4px }
+  /* prevent native text selection when clicking items (so shift+click selects items, not text) */
+  .item, .item * { -webkit-user-select: none; user-select: none; }
+      .controls button { margin-left: 8px }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h3>LAN Clipboard — Desktop</h3>
+      <div style="display:flex;align-items:center;gap:12px">
+        <div>已选: <span id="selectedCount">0</span></div>
+        <input id="textInput" placeholder="添加文本到共享" style="width:300px" />
+        <button id="addText">添加</button>
+      </div>
+    </header>
+
+  <div id="list" style="min-height:200px"></div>
+
+  <!-- toast container -->
+  <div id="toast-container" style="position:fixed;right:20px;bottom:20px;z-index:9999"></div>
+
+    <script>
+      const apiBase = 'http://127.0.0.1:3000';
+      function showToast(msg, timeout = 3000) {
+        const container = document.getElementById('toast-container');
+        const el = document.createElement('div');
+        el.textContent = msg;
+        el.style.background = 'rgba(0,0,0,0.85)';
+        el.style.color = '#fff';
+        el.style.padding = '8px 12px';
+        el.style.marginTop = '8px';
+        el.style.borderRadius = '6px';
+        el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+        el.style.fontSize = '13px';
+        container.appendChild(el);
+        setTimeout(() => { el.style.transition = 'opacity 200ms'; el.style.opacity = '0'; setTimeout(() => el.remove(), 200); }, timeout);
+      }
+      let _itemsCache = [];
+      let _selected = new Set();
+      let _lastIndex = -1;
+
+      async function load() {
+        const items = await window.electronAPI.listItems();
+        _itemsCache = items;
+        const list = document.getElementById('list');
+        list.innerHTML = '';
+        items.forEach((it, idx) => {
+          const row = document.createElement('div');
+          row.className = 'item';
+          row.dataset.id = it.id;
+          row.dataset.index = idx;
+          if (_selected.has(it.id)) row.style.background = '#def';
+          const meta = document.createElement('div');
+          meta.className = 'meta';
+          meta.style.display = 'flex';
+          meta.style.flexDirection = 'column';
+          meta.style.gap = '6px';
+          // thumbnail for images
+          if (it.type === 'file' && it.mimeType && it.mimeType.startsWith && it.mimeType.startsWith('image')) {
+            const thumb = document.createElement('img');
+            thumb.src = `${apiBase}/api/download/${it.id}`;
+            thumb.style.width = '64px';
+            thumb.style.height = '64px';
+            thumb.style.objectFit = 'cover';
+            meta.appendChild(thumb);
+          }
+          if (it.type === 'text') meta.innerHTML += `<strong>文本</strong> — ${new Date(it.timestamp).toLocaleString()}<div>${escapeHtml(it.text)}</div>`;
+          else meta.innerHTML += `<strong>文件</strong> — ${escapeHtml(it.name)} — ${Math.round(it.size/1024)}KB — ${new Date(it.timestamp).toLocaleString()}`;
+          // show cut state
+          if (it.cut) {
+            const s = document.createElement('div');
+            s.style.color = '#b00';
+            s.textContent = `CUT by ${it.cut.owner} pending:${(it.cut.pending||[]).length}`;
+            meta.appendChild(s);
+            row.classList.add('cut');
+          }
+          const controls = document.createElement('div');
+          controls.className = 'controls';
+          const copyBtn = document.createElement('button'); copyBtn.textContent = '复制';
+          copyBtn.addEventListener('click', async (ev) => { ev.stopPropagation(); await window.electronAPI.copyItem([it.id]); showToast('已复制到系统剪贴板（如适用）'); });
+          const pasteBtn = document.createElement('button'); pasteBtn.textContent = '粘贴';
+          pasteBtn.addEventListener('click', async (ev) => { ev.stopPropagation(); const res = await window.electronAPI.pasteItem(it.id); if (res && res.pasteAck) { showToast('已粘贴并发送 paste-ack'); } else { showToast('已粘贴到系统剪贴板（请在目标程序中按 Ctrl+V/Cmd+V）'); } load(); });
+          const dl = document.createElement('button'); dl.textContent = '下载';
+          dl.addEventListener('click', () => { window.open(`${apiBase}/api/download/${it.id}`, '_blank'); });
+          const del = document.createElement('button'); del.textContent = '清除';
+          del.addEventListener('click', async (ev) => { ev.stopPropagation(); await window.electronAPI.deleteItem(it.id); load(); });
+          controls.appendChild(copyBtn);
+          controls.appendChild(pasteBtn);
+          controls.appendChild(dl);
+          controls.appendChild(del);
+          row.appendChild(meta);
+          row.appendChild(controls);
+          list.appendChild(row);
+
+          // click/selection handlers
+          row.addEventListener('mousedown', (ev) => {
+            // prevent native text selection on shift-click/drag
+            ev.preventDefault();
+          });
+
+          row.addEventListener('click', (ev) => {
+            const id = it.id;
+            if (ev.shiftKey && _lastIndex !== -1) {
+              // select range between lastIndex and idx
+              const start = Math.min(_lastIndex, idx);
+              const end = Math.max(_lastIndex, idx);
+              for (let i = start; i <= end; i++) _selected.add(_itemsCache[i].id);
+            } else if (ev.ctrlKey || ev.metaKey) {
+              if (_selected.has(id)) _selected.delete(id); else _selected.add(id);
+              _lastIndex = idx;
+            } else {
+              // single select
+              _selected.clear();
+              _selected.add(id);
+              _lastIndex = idx;
+            }
+            // re-render selection styles and update selected count
+            Array.from(list.children).forEach(r => { r.style.background = _selected.has(r.dataset.id) ? '#def' : ''; });
+            document.getElementById('selectedCount').textContent = _selected.size;
+          });
+        });
+        document.getElementById('selectedCount').textContent = _selected.size;
+      }
+
+      function escapeHtml(s){ if (!s) return ''; return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+      document.getElementById('addText').addEventListener('click', async () => {
+        const v = document.getElementById('textInput').value;
+        if (!v) return;
+        await window.electronAPI.addText(v);
+        document.getElementById('textInput').value = '';
+        load();
+      });
+
+      load();
+      // refresh periodically
+      setInterval(load, 5000);
+
+      // handle global paste shortcut when the app window is focused
+      window.addEventListener('keydown', async (e) => {
+        // Create from clipboard shortcut: Ctrl/Cmd+V when not in input (existing behavior)
+        const isPasteCreate = (e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V');
+        if (isPasteCreate) {
+          const ae = document.activeElement;
+          if (!(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable))) {
+            e.preventDefault();
+            const res = await window.electronAPI.createItemFromClipboard();
+            if (res && res.ok && res.created && res.created.length) {
+              showToast('已将剪贴板内容创建为共享项目');
+              load();
+              return;
+            }
+          }
+        }
+
+        // Copy selected: Ctrl/Cmd+C
+        const isCopy = (e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C');
+        if (isCopy) {
+          const ae = document.activeElement;
+          if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return; // allow normal
+          e.preventDefault();
+          if (_selected.size === 0) return;
+          // copy each selected item (last one will remain in clipboard)
+          // Copy selected items as a group
+          await window.electronAPI.copyItem(Array.from(_selected));
+          showToast('已把选中项目复制到系统剪贴板（可在文件管理器中粘贴）');
+          return;
+        }
+
+        // Cut selected: Ctrl/Cmd+X
+        const isCut = (e.ctrlKey || e.metaKey) && (e.key === 'x' || e.key === 'X');
+        if (isCut) {
+          const ae = document.activeElement;
+          if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return; // allow normal
+          e.preventDefault();
+          if (_selected.size === 0) return;
+          const deviceId = await window.electronAPI.getDeviceId();
+          for (const id of Array.from(_selected)) {
+            // copy to clipboard
+            await window.electronAPI.copyItem(id);
+            // call cut API
+            try {
+              await fetch(`${apiBase}/api/items/${id}/cut`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ownerDeviceId: deviceId, ttlSeconds: 300 })
+              });
+            } catch (e) { console.error('cut failed', e); }
+          }
+          showToast('已剪切选中项目（已复制到剪贴板并向服务器发出 cut）');
+          load();
+          return;
+        }
+      });
+      // click blank area to clear selection
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('.item')) {
+          _selected.clear();
+          const list = document.getElementById('list');
+          Array.from(list.children).forEach(r => { r.style.background = ''; });
+          document.getElementById('selectedCount').textContent = '0';
+        }
+      });
+    </script>
+  </body>
+</html>
