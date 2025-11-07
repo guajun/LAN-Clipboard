@@ -18,4 +18,21 @@ function getDeviceInfo() {
   return info;
 }
 
-module.exports = { getDeviceInfo };
+const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+
+function getConfig() {
+  ensureDataDir();
+  try {
+    if (fs.existsSync(CONFIG_FILE)) return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+  } catch (e) {}
+  const def = { serverUrl: 'http://127.0.0.1', port: 3000 };
+  try { fs.writeFileSync(CONFIG_FILE, JSON.stringify(def, null, 2), 'utf8'); } catch (e) {}
+  return def;
+}
+
+function setConfig(cfg) {
+  ensureDataDir();
+  try { fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg || {}, null, 2), 'utf8'); return true; } catch (e) { return false; }
+}
+
+module.exports = { getDeviceInfo, getConfig, setConfig };

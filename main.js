@@ -298,25 +298,66 @@ ipcMain.handle('paste-item', async (event, id) => {
   try {
     const it = store.getItemById(id);
     if (!it) return { ok: false, error: 'not found' };
-    // put into system clipboard
-    if (it.type === 'text') {
-      clipboard.writeText(it.text);
-    } else {
+    // file item: if local file missing, download from configured server first
+    if (it.type === 'file') {
       const p = store.getItemPath(it);
-      if (p) {
-        try {
-          const img = nativeImage.createFromPath(p);
-          if (!img.isEmpty()) {
-            clipboard.writeImage(img);
-          } else {
-            // fallback: write file path as text
-            clipboard.writeText(p);
-          }
-        } catch (e) {
-          console.error('paste-item: error creating image from path', p, e && e.stack);
-          clipboard.writeText(p);
-        }
+      if (!p || !fs.existsSync(p)) {
+        // start download from configured server
+        const cfg = require('./src/device').getConfig();
+        const base = (cfg && cfg.serverUrl) ? cfg.serverUrl.replace(/\/$/, '') : null;
+        const port = (cfg && cfg.port) ? cfg.port : null;
+        if (!base) return { ok: false, error: 'no server configured' };
+        const url = `${base}:${port || ''}/api/download/${id}`.replace(/:\/\//, '://').replace(/:\/\//, '://');
+        // dest path: use existing stored path location if available, else create tmp batch dir
+        const tmpDir = path.join(store.DATA_DIR, 'tmp', 'download-'+id);
+        if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+        const dest = path.join(tmpDir, it.name || `${id}${path.extname(it.name||'')}`);
+        // stream download and report progress to renderer via event.sender
+        (async () => {
+          try {
+            const parsed = new URL(url);
+            const mod = parsed.protocol === 'https:' ? require('https') : require('http');
+            const req = mod.get(parsed.href, (res) => {
+              if (res.statusCode !== 200) {
+                event.sender.send('download-error', { id, status: res.statusCode });
+                return;
+              }
+              const total = parseInt(res.headers['content-length'] || '0', 10);
+              let received = 0;
+              const ws = fs.createWriteStream(dest);
+              res.on('data', (chunk) => {
+                received += chunk.length;
+                event.sender.send('download-progress', { id, received, total, percent: total ? Math.round(received/total*100) : null });
+              });
+              res.pipe(ws);
+              ws.on('finish', async () => {
+                // add to store as file item copying into data dir
+                try {
+                  const added = store.addFileItem(it.name || path.basename(dest), dest, it.mimeType);
+                  // notify renderer that download complete
+                  event.sender.send('download-complete', { id: added.id });
+                  // after download, write to clipboard (file:// URI)
+                  try { clipboard.writeText(pathToFileURL(store.getItemPath(added)).href); } catch (e) {}
+                } catch (e) {
+                  event.sender.send('download-error', { id, error: e && e.message });
+                }
+              });
+              ws.on('error', (err) => { event.sender.send('download-error', { id, error: err && err.message }); });
+            });
+            req.on('error', (err) => { event.sender.send('download-error', { id, error: err && err.message }); });
+          } catch (e) { event.sender.send('download-error', { id, error: e && e.message }); }
+        })();
+        return { ok: true, status: 'downloading' };
       }
+      // if exists, proceed to write clipboard below
+      const img = nativeImage.createFromPath(p);
+      if (!img.isEmpty()) {
+        clipboard.writeImage(img);
+      } else {
+        clipboard.writeText(pathToFileURL(p).href);
+      }
+    } else if (it.type === 'text') {
+      clipboard.writeText(it.text);
     }
     // if item is cut, inform server about paste-ack
     if (it.cut && it.cut.token) {

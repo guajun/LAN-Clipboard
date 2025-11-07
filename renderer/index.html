@@ -22,8 +22,13 @@
       <h3>LAN Clipboard — Desktop</h3>
       <div style="display:flex;align-items:center;gap:12px">
         <div>已选: <span id="selectedCount">0</span></div>
-        <input id="textInput" placeholder="添加文本到共享" style="width:300px" />
+        <input id="textInput" placeholder="添加文本到共享" style="width:240px" />
         <button id="addText">添加</button>
+        <div style="display:flex;align-items:center;gap:6px">
+          <input id="serverUrl" placeholder="服务器地址（例如 http://host）" style="width:220px" />
+          <input id="serverPort" placeholder="port" style="width:60px" />
+          <button id="saveServer">保存</button>
+        </div>
       </div>
     </header>
 
@@ -146,6 +151,44 @@
       });
 
       load();
+      // load server config
+      (async function(){
+        try {
+          const cfg = await window.electronAPI.getServerConfig();
+          if (cfg) {
+            document.getElementById('serverUrl').value = cfg.serverUrl || '';
+            document.getElementById('serverPort').value = cfg.port || '';
+          }
+        } catch (e) {}
+      })();
+
+      document.getElementById('saveServer').addEventListener('click', async () => {
+        const url = document.getElementById('serverUrl').value.trim();
+        const port = Number(document.getElementById('serverPort').value) || 0;
+        await window.electronAPI.setServerConfig({ serverUrl: url, port });
+        showToast('服务器配置已保存');
+      });
+
+      // download progress modal
+      const progressModal = document.createElement('div');
+      progressModal.style.position = 'fixed'; progressModal.style.left = '0'; progressModal.style.top = '0';
+      progressModal.style.width = '100%'; progressModal.style.height = '100%'; progressModal.style.display = 'none';
+      progressModal.style.alignItems = 'center'; progressModal.style.justifyContent = 'center';
+      progressModal.style.background = 'rgba(0,0,0,0.4)'; progressModal.style.zIndex = '10000';
+      const box = document.createElement('div'); box.style.background = '#fff'; box.style.padding = '18px'; box.style.borderRadius = '8px'; box.style.minWidth = '360px';
+      const label = document.createElement('div'); label.textContent = '正在从远端下载...'; label.style.marginBottom = '8px';
+      const barWrap = document.createElement('div'); barWrap.style.background = '#eee'; barWrap.style.borderRadius = '6px'; barWrap.style.overflow = 'hidden'; barWrap.style.height = '16px';
+      const bar = document.createElement('div'); bar.style.height = '100%'; bar.style.width = '0%'; bar.style.background = '#4caf50'; barWrap.appendChild(bar);
+      const pct = document.createElement('div'); pct.style.marginTop = '8px'; pct.textContent = '';
+      box.appendChild(label); box.appendChild(barWrap); box.appendChild(pct); progressModal.appendChild(box); document.body.appendChild(progressModal);
+
+      window.electronAPI.onDownloadProgress((data) => {
+        progressModal.style.display = 'flex';
+        if (data && data.percent != null) { bar.style.width = data.percent + '%'; pct.textContent = data.percent + '%'; }
+        else if (data && data.total) { const p = Math.round((data.received/data.total)*100); bar.style.width = p+'%'; pct.textContent = p+'%'; }
+      });
+      window.electronAPI.onDownloadComplete((data) => { progressModal.style.display = 'none'; showToast('下载完成'); load(); });
+      window.electronAPI.onDownloadError((data) => { progressModal.style.display = 'none'; showToast('下载失败: '+(data && (data.error||data.status)) , 5000); });
       // refresh periodically
       setInterval(load, 5000);
 

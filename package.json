@@ -1,16 +1,22 @@
 {
+  "author": {
+  "name": "guajun",
+  "email": "whgls323232@gmail.com"
+},
   "name": "lan-clipboard",
   "version": "0.1.0",
   "description": "LAN desktop clipboard sharing app - prototype",
   "main": "main.js",
   "scripts": {
-  "start": "electron .",
-  "start:wayland": "ELECTRON_ENABLE_WAYLAND=1 GDK_BACKEND=wayland XDG_SESSION_TYPE=wayland electron .",
+    "start": "electron .",
+    "start:wayland": "ELECTRON_ENABLE_WAYLAND=1 GDK_BACKEND=wayland XDG_SESSION_TYPE=wayland electron .",
     "web": "node ./web/server.js",
-    "pack": "echo 'Not implemented'"
+    "pack": "echo 'Not implemented'",
+    "dist": "electron-builder",
+    "dist:linux": "electron-builder --linux",
+    "dist:win": "electron-builder --win"
   },
   "keywords": [],
-  "author": "",
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
@@ -20,6 +26,19 @@
     "ws": "^8.13.0"
   },
   "devDependencies": {
-    "electron": "^39.0.0"
+    "electron": "^39.0.0",
+    "electron-builder": "^24.6.0"
+  },
+  "build": {
+    "appId": "com.example.lanclipboard",
+    "productName": "LAN-Clipboard",
+    "files": ["**/*"],
+    "directories": { "buildResources": "build" },
+    "linux": {
+      "target": ["AppImage", "deb"]
+    },
+    "win": {
+      "target": ["nsis", "zip"]
+    }
   }
 }
